@@ -1,6 +1,7 @@
 /*
+ * Copyright (C) 2014-2016 Tobias Brunner
  * Copyright (C) 2008 Martin Willi
- * Hochschule fuer Technik Rapperswil
+ * HSR Hochschule fuer Technik Rapperswil
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -36,12 +37,12 @@ typedef struct relation_t relation_t;
 struct relation_t {
 
 	/**
-	 * subject of this relation
+	 * Subject of this relation
 	 */
 	certificate_t *subject;
 
 	/**
-	 * issuer of this relation
+	 * Issuer of this relation
 	 */
 	certificate_t *issuer;
 
@@ -49,6 +50,11 @@ struct relation_t {
 	 * Signature scheme used to sign this relation
 	 */
 	signature_scheme_t scheme;
+
+	/**
+	 * Validity of the subject
+	 */
+	time_t notAfter;
 
 	/**
 	 * Cache hits
@@ -78,29 +84,59 @@ struct private_cert_cache_t {
 };
 
 /**
- * Cache relation in a free slot/replace an other
+ * Check if a relation is currently in use and valid or may be replaced/skipped
+ */
+static inline bool is_used(relation_t *rel, time_t now)
+{
+	return rel->subject &&
+			(rel->notAfter == UNDEFINED_TIME || now <= rel->notAfter);
+}
+
+/**
+ * (Re-)Set a given relation
+ */
+static void set_relation(relation_t *rel, certificate_t *subject,
+						 certificate_t *issuer, signature_scheme_t scheme,
+						 time_t notAfter)
+{
+	if (rel->subject)
+	{
+		rel->subject->destroy(rel->subject);
+		rel->issuer->destroy(rel->issuer);
+	}
+	rel->subject = subject->get_ref(subject);
+	rel->issuer = issuer->get_ref(issuer);
+	rel->scheme = scheme;
+	rel->notAfter = notAfter;
+	rel->hits = 0;
+}
+
+/**
+ * Cache relation in a free slot or replace another
  */
 static void cache(private_cert_cache_t *this,
 				  certificate_t *subject, certificate_t *issuer,
 				  signature_scheme_t scheme)
 {
 	relation_t *rel;
+	time_t now, notAfter;
 	int i, offset, try;
 	u_int total_hits = 0;
 
-	/* check for a unused relation slot first */
+	now = time(NULL);
+	subject->get_validity(subject, &now, NULL, &notAfter);
+
+	/* check for an unused or expired relation slot first */
 	for (i = 0; i < CACHE_SIZE; i++)
 	{
 		rel = &this->relations[i];
 
-		if (!rel->subject && rel->lock->try_write_lock(rel->lock))
+		if (!is_used(rel, now) && rel->lock->try_write_lock(rel->lock))
 		{
 			/* double-check having lock */
-			if (!rel->subject)
+			if (!is_used(rel, now))
 			{
-				rel->subject = subject->get_ref(subject);
-				rel->issuer = issuer->get_ref(issuer);
-				rel->scheme = scheme;
+				set_relation(rel, subject, issuer, scheme, notAfter);
 				return rel->lock->unlock(rel->lock);
 			}
 			rel->lock->unlock(rel->lock);
@@ -122,15 +158,7 @@ static void cache(private_cert_cache_t *this,
 			}
 			if (rel->lock->try_write_lock(rel->lock))
 			{
-				if (rel->subject)
-				{
-					rel->subject->destroy(rel->subject);
-					rel->issuer->destroy(rel->issuer);
-				}
-				rel->subject = subject->get_ref(subject);
-				rel->issuer = issuer->get_ref(issuer);
-				rel->scheme = scheme;
-				rel->hits = 0;
+				set_relation(rel, subject, issuer, scheme, notAfter);
 				return rel->lock->unlock(rel->lock);
 			}
 		}
@@ -146,14 +174,17 @@ METHOD(cert_cache_t, issued_by, bool,
 	certificate_t *cached_issuer = NULL;
 	relation_t *found = NULL, *current;
 	signature_scheme_t scheme;
+	time_t now;
 	int i;
+
+	now = time(NULL);
 
 	for (i = 0; i < CACHE_SIZE; i++)
 	{
 		current = &this->relations[i];
 
 		current->lock->read_lock(current->lock);
-		if (current->subject)
+		if (is_used(current, now))
 		{
 			if (issuer->equals(issuer, current->issuer))
 			{
@@ -205,6 +236,8 @@ typedef struct {
 	key_type_t key;
 	/** ID to get a cert for */
 	identification_t *id;
+	/** current time */
+	time_t now;
 	/** cache */
 	relation_t *relations;
 	/** current position in array cache */
@@ -233,7 +266,7 @@ static bool cert_enumerate(cert_enumerator_t *this, certificate_t **out)
 		rel = &this->relations[this->index];
 		rel->lock->read_lock(rel->lock);
 		this->locked = this->index;
-		if (rel->subject)
+		if (is_used(rel, this->now))
 		{
 			/* CRL lookup is done using issuer/authkeyidentifier */
 			if (this->key == KEY_ANY && this->id &&
@@ -297,16 +330,19 @@ METHOD(credential_set_t, create_enumerator, enumerator_t*,
 	{
 		return NULL;
 	}
-	enumerator = malloc_thing(cert_enumerator_t);
-	enumerator->public.enumerate = (void*)cert_enumerate;
-	enumerator->public.destroy = (void*)cert_enumerator_destroy;
-	enumerator->cert = cert;
-	enumerator->key = key;
-	enumerator->id = id;
-	enumerator->relations = this->relations;
-	enumerator->index = -1;
-	enumerator->locked = -1;
-
+	INIT(enumerator,
+		.public = {
+			.enumerate = (void*)cert_enumerate,
+			.destroy = (void*)cert_enumerator_destroy,
+		},
+		.cert = cert,
+		.key = key,
+		.id = id,
+		.now = time(NULL),
+		.relations = this->relations,
+		.index = -1,
+		.locked = -1,
+	);
 	return &enumerator->public;
 }
 
