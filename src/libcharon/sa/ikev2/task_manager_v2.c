@@ -1400,6 +1400,9 @@ static status_t parse_message(private_task_manager_t *this, message_t *msg)
 /**
  * Check if a message with message ID 0 might be used to synchronize the
  * message IDs.
+ *
+ * Note: This is not called if the responder never sent a message before (i.e.
+ * we expect MID 0).
  */
 static bool is_mid_sync(private_task_manager_t *this, message_t *msg)
 {
