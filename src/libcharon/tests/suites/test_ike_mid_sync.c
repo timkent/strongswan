@@ -156,12 +156,13 @@ static struct {
 	{ 0, 1, 2, 2 },
 	{ 1, 1, 1, 3 },
 	{ 1, 1, 2, 4 },
+	{ 1, 2, 2, 4 },
 };
 
 /**
  * The responder syncs message IDs with the initiator
  */
-START_TEST(test_responder_init)
+START_TEST(test_responder)
 {
 	ike_sa_t *a, *b;
 	mid_sync_listener_t mid = {
@@ -238,6 +239,55 @@ START_TEST(test_replay)
 	exchange_test_helper->process_message(exchange_test_helper, a, replay);
 	ck_assert(!exchange_test_helper->sender->dequeue(exchange_test_helper->sender));
 
+
+	call_ikesa(a, destroy);
+	call_ikesa(b, destroy);
+	chunk_free(&mid.init.nonce);
+	chunk_free(&mid.resp.nonce);
+}
+END_TEST
+
+/**
+ * Make sure the notify is ignored if the extension is not enabled.
+ */
+START_TEST(test_disabled)
+{
+	ike_sa_t *a, *b;
+	mid_sync_listener_t mid = {
+		.listener = { .message = (void*)handle_mid, },
+		.init = {
+			.send = data[_i].send,
+			.recv = data[_i].recv,
+		},
+	};
+
+	exchange_test_helper->establish_sa(exchange_test_helper,
+									   &a, &b, NULL);
+
+	send_dpds(a, b, data[_i].dpds_a);
+	send_dpds(b, a, data[_i].dpds_b);
+
+	exchange_test_helper->add_listener(exchange_test_helper, &mid.listener);
+	send_mid_sync(b, data[_i].dpds_b, UINT_MAX);
+	exchange_test_helper->process_message(exchange_test_helper, a, NULL);
+	/* we don't expect a response and unchanged MIDs */
+	/* FIXME: if the responder previously sent one INFORMATIONAL message we
+	 * consider this as a retransmit and resend our response */
+	if (data[_i].dpds_b == 1)
+	{
+		assert_message_empty();
+		exchange_test_helper->process_message(exchange_test_helper, b, NULL);
+	}
+	else
+	{
+		ck_assert(!exchange_test_helper->sender->dequeue(exchange_test_helper->sender));
+	}
+	ck_assert_int_eq(2 + data[_i].dpds_a, a->get_message_id(a, TRUE));
+	ck_assert_int_eq(data[_i].dpds_b, a->get_message_id(a, FALSE));
+	charon->bus->remove_listener(charon->bus, &mid.listener);
+
+	send_dpd(a, b);
+	send_dpd(b, a);
 
 	call_ikesa(a, destroy);
 	call_ikesa(b, destroy);
@@ -429,8 +479,9 @@ Suite *ike_mid_sync_suite_create()
 	s = suite_create("ike MID sync");
 
 	tc = tcase_create("responder");
-	tcase_add_loop_test(tc, test_responder_init, 0, countof(data));
+	tcase_add_loop_test(tc, test_responder, 0, countof(data));
 	tcase_add_loop_test(tc, test_replay, 0, countof(data));
+	tcase_add_loop_test(tc, test_disabled, 0, countof(data));
 	suite_add_tcase(s, tc);
 
 	tc = tcase_create("sender MID too low");
