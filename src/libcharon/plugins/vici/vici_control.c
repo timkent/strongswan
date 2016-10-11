@@ -581,12 +581,14 @@ CALLBACK(install, vici_message_t*,
 CALLBACK(uninstall, vici_message_t*,
 	private_vici_control_t *this, char *name, u_int id, vici_message_t *request)
 {
+	peer_cfg_t *peer_cfg;
 	child_sa_t *child_sa;
 	enumerator_t *enumerator;
 	uint32_t reqid = 0;
-	char *child;
+	char *child, *ike;
 
 	child = request->get_str(request, NULL, "child");
+	ike = request->get_str(request, NULL, "ike");
 	if (!child)
 	{
 		return send_reply(this, "missing configuration name");
@@ -600,8 +602,12 @@ CALLBACK(uninstall, vici_message_t*,
 	}
 
 	enumerator = charon->traps->create_enumerator(charon->traps);
-	while (enumerator->enumerate(enumerator, NULL, &child_sa))
+	while (enumerator->enumerate(enumerator, &peer_cfg, &child_sa))
 	{
+		if (ike && !streq(ike, peer_cfg->get_name(peer_cfg)))
+		{
+			continue;
+		}
 		if (streq(child, child_sa->get_name(child_sa)))
 		{
 			reqid = child_sa->get_reqid(child_sa);

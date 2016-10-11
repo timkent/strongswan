@@ -324,6 +324,7 @@ Uninstall a trap, drop or bypass policy defined by a CHILD_SA config.
 
 	{
 		child = <CHILD_SA configuration name to install>
+		ike = <optional IKE_SA configuraiton name to find child under>
 	} => {
 		success = <yes or no>
 		errmsg = <error string on failure>
